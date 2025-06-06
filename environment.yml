@@ -1,0 +1,17 @@
+name: tpc-memberbot
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pandas
+  - openpyxl
+  - requests
+  - beautifulsoup4
+  - lxml
+  - pyyaml
+  - slack-sdk
+  - schedule
+  - pip
+  - pip:
+      - python-dotenv
+
