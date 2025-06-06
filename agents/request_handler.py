@@ -36,26 +36,42 @@ def _save_last_processed_id(last_id: int) -> None:
 
 
 def get_new_requests() -> List[Dict[str, str]]:
-    """Return a list of new request dictionaries (id, name, email, organization)."""
+    """
+    Parse the submission CSV and return a list of new, unprocessed requests.
+
+    Returns
+    -------
+    List[Dict[str, str]]
+        Each dict has keys: id, name, email, organization.
+    """
+    # map from our logical field -> header in the CSV
+    COL = {
+        "id": "#",
+        "name": "Name (Last, First)",
+        "email": "Email",
+        "org": "Your Institution",
+    }
+
     new_requests: List[Dict[str, str]] = []
     last_id = _load_last_processed_id()
     next_id = last_id
 
     with Path(SUBMISSION_CSV).open(newline="", encoding="utf-8") as csvfile:
-        for row in csv.DictReader(csvfile):
+        reader = csv.DictReader(csvfile)
+        for row_no, row in enumerate(reader, start=1):
+            raw_id = row.get(COL["id"], "").strip()
             try:
-                row_id = int(row.get("ID", 0))
-            except ValueError:
-                logger.warning("Skipping row with non-integer ID: %s", row.get("ID"))
-                continue
+                row_id = int(raw_id)
+            except ValueError:         # blank or non-numeric
+                row_id = row_no        # fallback to monotonically increasing number
 
             if row_id > last_id:
                 new_requests.append(
                     {
                         "id": row_id,
-                        "name": row.get("Your name", "").strip(),
-                        "email": row.get("Email address", "").strip(),
-                        "organization": row.get("Organization or Affiliation", "").strip(),
+                        "name": row.get(COL["name"], "").strip(),
+                        "email": row.get(COL["email"], "").strip(),
+                        "organization": row.get(COL["org"], "").strip(),
                     }
                 )
                 next_id = max(next_id, row_id)

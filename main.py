@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
-"""
-main.py
+"""main.py
 
 Entry point and orchestrator for the TPC MemberBot system.
 
-Usage
------
-$ ./main.py          # normal run (INFO logging)
-$ ./main.py -v       # verbose run (DEBUG logging)
+Logging behaviour
+-----------------
+* Always write **all** log records (DEBUG+) to *memberbot.log* in the repo root.
+* If ``-v`` / ``--verbose`` is passed, **also** emit logs to the console.
 
-Pipeline
---------
-1. Pull new Ninja-Forms submissions (request_handler)
-2. Validate email & whitelist status (domain_checker)
-3. Ask for institutional email if needed (email_notifier)
-4. Invite eligible users to Slack (slack_inviter)
-5. Subscribe users to Mailman lists (mailman_agent)
-6. Update bookkeeping spreadsheets (spreadsheet_updater)
+Duplicate‑email handling
+-----------------------
+Within a single run we skip rows whose email address (case‑insensitive) has
+already been processed.  That means a CSV containing duplicate addresses will
+only perform each action once per invocation.
 """
 from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
+from typing import Set
 
 from agents import (
     request_handler,
@@ -32,24 +30,46 @@ from agents import (
     email_notifier,
 )
 
+###############################################################################
+# Logging helpers
+###############################################################################
 
 def _setup_logging(verbose: bool = False) -> None:
-    """Configure root-level logging."""
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+    """Configure root logger with file + optional stream handler."""
+    log_path = Path("memberbot.log")
+
+    # File handler (always on)
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_formatter = logging.Formatter(
+        fmt="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    file_handler.setFormatter(file_formatter)
+
+    # Optional console handler
+    handlers = [file_handler]
+    if verbose:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setLevel(logging.DEBUG)
+        stream_handler.setFormatter(file_formatter)
+        handlers.append(stream_handler)
+
+    logging.basicConfig(level=logging.DEBUG, handlers=handlers, force=True)
 
 
 logger = logging.getLogger(__name__)
 
+###############################################################################
+# Main workflow
+###############################################################################
 
 def main() -> None:
-    """Main orchestration loop."""
+    """Top‑level orchestration loop."""
     parser = argparse.ArgumentParser(description="TPC MemberBot orchestrator")
-    parser.add_argument("-v", "--verbose", action="store_true", help="enable DEBUG logging")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="also log to the console"
+    )
     args = parser.parse_args()
 
     _setup_logging(args.verbose)
@@ -58,21 +78,29 @@ def main() -> None:
     new_requests = request_handler.get_new_requests()
     logger.info("📥  %d new request(s) found", len(new_requests))
 
-    for req in new_requests:
-        logger.info("→ Processing %s", req["email"])
+    seen: Set[str] = set()  # deduplicate by email within this run
 
-        if not domain_checker.is_valid_email(req["email"]):
+    for req in new_requests:
+        email = req["email"].strip().lower()
+        if email in seen:
+            logger.debug("⏩  Skipping duplicate email %s", email)
+            continue
+        seen.add(email)
+
+        logger.info("→ Processing %s", email)
+
+        if not domain_checker.is_valid_email(email):
             email_notifier.request_institutional_email(req)
             spreadsheet_updater.update_tracker(req, slack_invited=False)
             continue
 
-        if domain_checker.is_whitelisted(req["email"]):
+        if domain_checker.is_whitelisted(email):
             slack_inviter.send_invite(req)
 
         mailman_agent.add_to_lists(req)
         spreadsheet_updater.update_all(req, slack_invited=True)
 
-    logger.info("✅  Processing complete.")
+    logger.info("✅  Processing complete; processed %d unique addresses", len(seen))
 
 
 if __name__ == "__main__":
